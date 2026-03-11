@@ -15,6 +15,9 @@ PANE_CACHE_FILE="$PANE_CACHE_DIR/panes.cache"
 # TS_EXTRA_SEARCH_PATHS=(~/ghq:3 ~/Git:3 ~/.config:2)
 # # if set this override the TS_MAX_DEPTH (1)
 # TS_MAX_DEPTH=2
+# # base directory to use when cloning new git repos from the picker
+# # defaults to the first entry in TS_SEARCH_PATHS if not set
+# TS_CLONE_BASE_DIR=~/myprojects
 # This is not meant to override .tmux-sessionizer.  At first i thought this
 # would be a good command, but i don't think its ackshually what i want.
 #
@@ -130,6 +133,11 @@ sanity_check() {
         echo "fzf is not installed. Please install it first."
         exit 1
     fi
+
+    if ! command -v git &>/dev/null; then
+        echo "git is not installed. Please install it first."
+        exit 1
+    fi
 }
 
 switch_to() {
@@ -220,16 +228,16 @@ if [[ ${#TS_EXTRA_SEARCH_PATHS[@]} -gt 0 ]]; then
     TS_SEARCH_PATHS+=("${TS_EXTRA_SEARCH_PATHS[@]}")
 fi
 
-# utility function to find directories
-find_dirs() {
-    # list TMUX sessions
+list_tmux_sessions() {
     if [[ -n "${TMUX}" ]]; then
         current_session=$(tmux display-message -p '#S')
         tmux list-sessions -F "[TMUX] #{session_name}" 2>/dev/null | grep -vFx "[TMUX] $current_session"
     else
         tmux list-sessions -F "[TMUX] #{session_name}" 2>/dev/null
     fi
+}
 
+list_project_dirs() {
     # note: TS_SEARCH_PATHS is an array of paths to search for directories
     # if the path ends with :number, it will search for directories with a max depth of number ;)
     # if there is no number, it will search for directories with a max depth defined by TS_MAX_DEPTH or 1 if not set
@@ -244,6 +252,93 @@ find_dirs() {
 
         [[ -d "$path" ]] && find "$path" -mindepth 1 -maxdepth "${depth:-${TS_MAX_DEPTH:-1}}" -path '*/.git' -prune -o -type d -print
     done
+}
+
+get_clone_base_dir() {
+    if [[ -n "$TS_CLONE_BASE_DIR" ]]; then
+        echo "$TS_CLONE_BASE_DIR"
+        return
+    fi
+
+    # Default to the first TS_SEARCH_PATH entry
+    if [[ ${#TS_SEARCH_PATHS[@]} -gt 0 ]]; then
+        local entry="${TS_SEARCH_PATHS[0]}"
+        if [[ "$entry" =~ ^([^:]+):([0-9]+)$ ]]; then
+            echo "${BASH_REMATCH[1]}"
+        else
+            echo "$entry"
+        fi
+        return
+    fi
+
+    echo "$HOME"
+}
+
+open_or_create_session_for_path() {
+    local selected="$1"
+    local selected_name
+
+    selected_name=$(basename "$selected" | tr . _)
+
+    if ! is_tmux_running; then
+        tmux new-session -ds "$selected_name" -c "$selected"
+        hydrate "$selected_name" "$selected"
+    fi
+
+    if ! has_session "$selected_name"; then
+        tmux new-session -ds "$selected_name" -c "$selected"
+        hydrate "$selected_name" "$selected"
+    fi
+
+    switch_to "$selected_name"
+}
+
+clone_repo_and_open_session() {
+    local git_url
+    local base_dir
+    local repo_name
+    local target_dir
+
+    read -rp "Git URL: " git_url
+    if [[ -z "$git_url" ]]; then
+        echo "No Git URL provided. Aborting."
+        exit 1
+    fi
+
+    # Derive repo name from URL
+    repo_name=$(basename "${git_url}")
+    repo_name="${repo_name%.git}"
+
+    base_dir=$(get_clone_base_dir)
+    mkdir -p "$base_dir"
+
+    target_dir="$base_dir/$repo_name"
+
+    if [[ -d "$target_dir" ]]; then
+        echo "\"$target_dir\" already exists."
+        if [[ -d "$target_dir/.git" ]]; then
+            read -rp "Use existing directory and open session here? [y/N] " answer
+            if [[ "$answer" =~ ^[Yy]$ ]]; then
+                open_or_create_session_for_path "$target_dir"
+                exit 0
+            else
+                echo "Aborting."
+                exit 1
+            fi
+        else
+            echo "Directory exists but does not appear to be a git repo. Aborting."
+            exit 1
+        fi
+    fi
+
+    echo "Cloning into \"$target_dir\"..."
+    if ! git clone "$git_url" "$target_dir"; then
+        echo "git clone failed. Aborting."
+        exit 1
+    fi
+
+    open_or_create_session_for_path "$target_dir"
+    exit 0
 }
 
 handle_session_cmd() {
@@ -318,27 +413,19 @@ if [[ ! -z $session_cmd ]]; then
 elif [[ ! -z $user_selected ]]; then
     selected="$user_selected"
 else
-    selected=$(find_dirs | fzf)
+    selected=$( (list_tmux_sessions; echo "[GIT_CLONE]"; list_project_dirs) | fzf)
 fi
 
 if [[ -z $selected ]]; then
     exit 0
 fi
 
+if [[ "$selected" == "[GIT_CLONE]" ]]; then
+    clone_repo_and_open_session
+fi
+
 if [[ "$selected" =~ ^\[TMUX\]\ (.+)$ ]]; then
     selected="${BASH_REMATCH[1]}"
 fi
 
-selected_name=$(basename "$selected" | tr . _)
-
-if ! is_tmux_running; then
-    tmux new-session -ds "$selected_name" -c "$selected"
-    hydrate "$selected_name" "$selected"
-fi
-
-if ! has_session "$selected_name"; then
-    tmux new-session -ds "$selected_name" -c "$selected"
-    hydrate "$selected_name" "$selected"
-fi
-
-switch_to "$selected_name"
+open_or_create_session_for_path "$selected"

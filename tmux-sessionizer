@@ -416,7 +416,12 @@ if [[ ! -z $session_cmd ]]; then
 elif [[ ! -z $user_selected ]]; then
     selected="$user_selected"
 else
-    result=$( (list_tmux_sessions; list_project_dirs) | fzf --print-query --preview 'tree -L 2 {}')
+    result=$(
+        (list_tmux_sessions; list_project_dirs) |
+            fzf --print-query --preview '
+        if ! echo {} | grep -q "^\[TMUX\]"; then
+            tree -L 2 {} 2>/dev/null
+        fi ')
     selected=$(echo "$result" | tail -1)
     query=$(echo "$result" | head -1)
 

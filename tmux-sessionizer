@@ -294,12 +294,15 @@ open_or_create_session_for_path() {
 }
 
 clone_repo_and_open_session() {
-    local git_url
+    local git_url="${1:-}"
     local base_dir
     local repo_name
     local target_dir
 
-    read -rp "Git URL: " git_url
+    if [[ -z "$git_url" ]]; then
+        read -rp "Git URL: " git_url
+    fi
+
     if [[ -z "$git_url" ]]; then
         echo "No Git URL provided. Aborting."
         exit 1
@@ -413,15 +416,23 @@ if [[ ! -z $session_cmd ]]; then
 elif [[ ! -z $user_selected ]]; then
     selected="$user_selected"
 else
-    selected=$( (list_tmux_sessions; echo "[GIT_CLONE]"; list_project_dirs) | fzf --preview 'tree -L 2 {}')
+    result=$( (list_tmux_sessions; list_project_dirs) | fzf --print-query --preview 'tree -L 2 {}')
+    selected=$(echo "$result" | tail -1)
+    query=$(echo "$result" | head -1)
+
+    if [[ "$query" =~ ^https?://|^git@ ]]; then
+        selected="$query"
+    elif [[ "$selected" == "$query" ]]; then
+        selected=""
+    fi
 fi
 
 if [[ -z $selected ]]; then
     exit 0
 fi
 
-if [[ "$selected" == "[GIT_CLONE]" ]]; then
-    clone_repo_and_open_session
+if [[ "$selected" =~ ^https?://|^git@ ]]; then
+    clone_repo_and_open_session "$selected"
 fi
 
 if [[ "$selected" =~ ^\[TMUX\]\ (.+)$ ]]; then
